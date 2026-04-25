@@ -5,6 +5,9 @@ import express from 'express';
 import cors from 'cors';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
+import recipeRoutes from './routes/recipes.js';
+
+
 
 const app = express();
 
@@ -18,6 +21,9 @@ app.get('/', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users',userRoutes);
+
+app.use('/api/recipes',recipeRoutes);
+
 
 const PORT = process.env.PORT || 8000;
 
