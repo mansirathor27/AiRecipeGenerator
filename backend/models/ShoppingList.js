@@ -169,7 +169,7 @@ class ShoppingList {
         return result.rows;
     }
 
-    static async getCheckedToPantry(userId){
+    static async addCheckedToPantry(userId){
         const client = await db.pool.connect();
         try {
             await client.query('BEGIN');

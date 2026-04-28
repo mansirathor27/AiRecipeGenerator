@@ -1,9 +1,9 @@
 import Recipe from '../models/Recipe.js';
 import PantryItem from '../models/PantryItem.js';
-import { generateRecipe as generateRecipeAI, generatePantrySuggestions as generatePantrySuggestionsAI} from '../utils/gemini.js';
+import { generateRecipe as generateRecipeAI, generatePantrySuggestions as generatePantrySuggestionsAI } from '../utils/gemini.js';
 
-export const generateRecipe = async(req, res, next) =>{
-    try{
+export const generateRecipe = async (req, res, next) => {
+    try {
         const {
             ingredients = [],
             usePantryIngredients = false,
@@ -15,32 +15,57 @@ export const generateRecipe = async(req, res, next) =>{
 
         let finalIngredients = [...ingredients];
 
-        if(usePantryIngredients){
+        if (usePantryIngredients) {
             const pantryItems = await PantryItem.findByUserId(req.user.id);
             const pantryIngredientNames = pantryItems.map(item => item.name);
             finalIngredients = [...new Set([...finalIngredients, ...pantryIngredientNames])];
         }
 
-        if(finalIngredients.length === 0){
+        if (finalIngredients.length === 0) {
             return res.status(400).json({
                 success: false,
-                message: 'At least one ingredient is required to generate a recipe'
+                message: 'At least one ingredient is required'
             });
         }
 
-        const recipe = await geneerateRecipeAI({
+        const recipe = await generateRecipeAI({
             ingredients: finalIngredients,
             dietaryRestrictions,
             cuisineType,
             servings,
-            cookingTime});
+            cookingTime
+        });
+
         res.json({
-            success: true, 
-            message: 'Recipe generated successfully',
+            success: true,
             data: { recipe }
         });
-    }catch(error){        
-        next(error);  
+
+    } catch (error) {
+        console.error("Generate Recipe Error:", error);
+        next(error);
+    }
+};
+
+export const saveRecipe = async (req, res, next) => {
+    try {
+        console.log("SAVE BODY:", req.body); // debug
+
+        if (!req.user || !req.user.id) {
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+        }
+
+        const recipe = await Recipe.create(req.user.id, req.body);
+
+        res.status(201).json({
+            success: true,
+            message: 'Recipe saved successfully',
+            data: { recipe }
+        });
+
+    } catch (error) {
+        console.error("Save Recipe Error:", error);
+        next(error);
     }
 };
 
@@ -60,18 +85,7 @@ export const getPantrySuggestions = async(req, res, next) =>{
     }   
 };
 
-export const saveRecipe = async(req, res, next) =>{
-    try {
-        const recipe = await Recipe.create(req.user.id, req.body);
-        res.status(201).json({
-            success: true,
-            message: 'Recipe saved successfully',
-            data: { recipe }
-        });
-    } catch (error) {
-        next(error);
-    }
-};
+
 
 export const getRecipes = async(req, res, next) =>{
     try{

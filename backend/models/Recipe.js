@@ -1,53 +1,132 @@
 import db from '../config/db.js';
 
 class Recipe {
+
     static async create(userId, recipeData) {
         const client = await db.pool.connect();
+
         try {
             await client.query('BEGIN');
-            const { name, 
+
+            let {
+                name,
+                description,
+                cuisine_type,
+                difficulty,
+                prep_time,
+                cook_time,
+                servings,
+                instructions,
+                dietary_tags = [],
+                user_notes,
+                image_url,
+                ingredients = [],
+                nutrition = {}
+            } = recipeData;
+
+            // ✅ FIX 1: Normalize instructions
+            const safeInstructions = Array.isArray(instructions)
+                ? instructions
+                : (instructions ? [instructions] : []);
+
+            // ✅ FIX 2: Normalize dietary tags
+            const safeDietaryTags = Array.isArray(dietary_tags)
+                ? dietary_tags
+                : (dietary_tags ? [dietary_tags] : []);
+
+            // ✅ FIX 3: Normalize ingredients
+            const safeIngredients = (ingredients || []).map(ing => {
+                if (typeof ing === 'string') {
+                    return {
+                        name: ing,
+                        quantity: null,
+                        unit: null
+                    };
+                }
+
+                return {
+                    name: ing.name || "Unknown",
+                    quantity: ing.quantity || null,
+                    unit: ing.unit || null,
+                    price_per_unit: ing.price_per_unit || ing.pricePerUnit || 0
+                };
+            });
+
+            // ✅ Insert recipe
+            const recipeResult = await client.query(
+                `INSERT INTO recipes 
+                (user_id, name, description, cuisine_type, difficulty, prep_time, cook_time, servings, instructions, dietary_tags, user_notes, image_url)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                RETURNING *`,
+                [
+                    userId,
+                    name,
                     description,
                     cuisine_type,
                     difficulty,
                     prep_time,
                     cook_time,
                     servings,
-                    instructions,
-                    dietary_tags =[],
+                    JSON.stringify(safeInstructions),
+                    safeDietaryTags,
                     user_notes,
-                    image_url,
-                    ingredients = [],
-                    nutrition = {} 
-                } = recipeData;
-            const recipeResult = await client.query(
-                `INSERT INTO recipes (user_id, name, description, cuisine_type, difficulty, prep_time, cook_time, servings, instructions, dietary_tags, user_notes, image_url)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-                [userId, name, description, cuisine_type, difficulty, prep_time, cook_time, servings, JSON.stringify(instructions), dietary_tags, user_notes, image_url]
+                    image_url
+                ]
             );
+
             const recipe = recipeResult.rows[0];
 
-            if(ingredients.length > 0) {
-                    const ingredientValues = ingredients.map((ing, idx) => `($1, $${idx * 3 + 2}, $${idx * 3 + 3}, $${idx * 3 + 4})`).join(', ');
-                    const ingredientParams = [recipe.id];
-                ingredients.forEach(ing => {
-                    ingredientParams.push(ing.name, ing.quantity, ing.unit);
+            // ✅ Insert ingredients safely
+            if (safeIngredients.length > 0) {
+
+                const values = [];
+                const params = [];
+
+                safeIngredients.forEach((ing, idx) => {
+                    const base = idx * 5;
+                    values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`);
+
+                    params.push(
+                        recipe.id,
+                        ing.name,
+                        ing.quantity,
+                        ing.unit,
+                        ing.price_per_unit
+                    );
                 });
+
                 await client.query(
-                    `INSERT INTO recipe_ingredients (recipe_id, ingredient_name, quantity, unit) VALUES ${ingredientValues}`,
-                    ingredientParams
-                );
-            } 
-             if(nutrition && Object.keys(nutrition).length > 0) {
-                await client.query(
-                    `INSERT INTO recipe_nutrition (recipe_id, calories, protein, carbs, fats, fiber) VALUES ($1, $2, $3, $4, $5, $6)`,
-                    [recipe.id, nutrition.calories, nutrition.protein, nutrition.carbs, nutrition.fats, nutrition.fiber]
+                    `INSERT INTO recipe_ingredients 
+                    (recipe_id, ingredient_name, quantity, unit, price_per_unit)
+                    VALUES ${values.join(', ')}`,
+                    params
                 );
             }
+
+            // ✅ Insert nutrition safely
+            if (nutrition && Object.keys(nutrition).length > 0) {
+                await client.query(
+                    `INSERT INTO recipe_nutrition 
+                    (recipe_id, calories, protein, carbs, fats, fiber)
+                    VALUES ($1,$2,$3,$4,$5,$6)`,
+                    [
+                        recipe.id,
+                        nutrition.calories || null,
+                        nutrition.protein || null,
+                        nutrition.carbs || null,
+                        nutrition.fats || null,
+                        nutrition.fiber || null
+                    ]
+                );
+            }
+
             await client.query('COMMIT');
+
             return await this.findById(recipe.id, userId);
-        
+
         } catch (error) {
             await client.query('ROLLBACK');
+            console.error("DB ERROR:", error);
             throw error;
         } finally {
             client.release();
@@ -59,17 +138,23 @@ class Recipe {
             `SELECT * FROM recipes WHERE id = $1 AND user_id = $2`,
             [id, userId]
         );
-        if(recipeResult.rows.length === 0) return null;
+
+        if (recipeResult.rows.length === 0) return null;
+
         const recipe = recipeResult.rows[0];
 
         const ingredientsResult = await db.query(
-            `SELECT ingredient_name as name, quantity, unit FROM recipe_ingredients WHERE recipe_id = $1`,
+            `SELECT ingredient_name as name, quantity, unit, price_per_unit 
+             FROM recipe_ingredients WHERE recipe_id = $1`,
             [id]
         );
+
         const nutritionResult = await db.query(
-            `SELECT calories, protein, carbs, fats, fiber FROM recipe_nutrition WHERE recipe_id = $1`,
+            `SELECT calories, protein, carbs, fats, fiber 
+             FROM recipe_nutrition WHERE recipe_id = $1`,
             [id]
         );
+
         return {
             ...recipe,
             ingredients: ingredientsResult.rows,

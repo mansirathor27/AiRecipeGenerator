@@ -40,7 +40,8 @@ export const generateRecipe = async({ ingredients, dietaryRestrictions=[], cuisi
             {
                 "name": "Ingredient Name",
                 "quantity": number,
-                "unit": "unit of measurement"
+                "unit": "unit of measurement",
+                "pricePerUnit": number (estimated cost per single unit)
             }
         ],
         "instructions": [
