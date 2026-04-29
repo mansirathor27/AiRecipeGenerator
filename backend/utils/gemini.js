@@ -1,6 +1,5 @@
 import dotenv from 'dotenv';
-import {GoogleGenAI} from "@google/genai";
-import { getPantryItems } from '../controllers/pantryController.js';
+import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
@@ -8,12 +7,48 @@ const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY,
 });
 
-if(!process.env.GEMINI_API_KEY) {
-    console.error('WARNING: Gemini API key is not set. Please set GEMINI_API_KEY in your environment variables.');
+if (!process.env.GEMINI_API_KEY) {
+    console.error('WARNING: Gemini API key is not set.');
 }
 
-export const generateRecipe = async({ ingredients, dietaryRestrictions=[], cuisineType='any', servings=4, cookingTime='medium' }) => {
-    const dietaryInfo = dietaryRestrictions.length > 0 ? `Dietary restrictions: ${dietaryRestrictions.join(', ')}.` : 'No dietary restrictions.';
+// ------------------- RETRY HELPER -------------------
+const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
+const callGeminiWithRetry = async (fn, retries = 3) => {
+    try {
+        return await fn();
+    } catch (err) {
+        if (retries > 0 && (err?.status === 503 || err?.status === 429)) {
+            console.log(`Gemini busy. Retrying... (${retries})`);
+            await sleep(2000);
+            return callGeminiWithRetry(fn, retries - 1);
+        }
+        throw err;
+    }
+};
+
+// ------------------- PARSE SAFE TEXT -------------------
+const extractText = (response) => {
+    return (
+        response?.text ||
+        response?.candidates?.[0]?.content?.parts?.[0]?.text ||
+        ''
+    ).trim();
+};
+
+// ------------------- GENERATE RECIPE -------------------
+export const generateRecipe = async ({
+    ingredients,
+    dietaryRestrictions = [],
+    cuisineType = 'any',
+    servings = 4,
+    cookingTime = 'medium'
+}) => {
+
+    const dietaryInfo =
+        dietaryRestrictions.length > 0
+            ? `Dietary restrictions: ${dietaryRestrictions.join(', ')}.`
+            : 'No dietary restrictions.';
 
     const timeGuide = {
         quick: 'under 30 minutes',
@@ -21,130 +56,161 @@ export const generateRecipe = async({ ingredients, dietaryRestrictions=[], cuisi
         long: 'over 60 minutes'
     };
 
-    const prompt = `Generate a detailed recipe using the following ingredients: 
-    Ingredients available: ${ingredients.join(', ')} 
-    ${dietaryInfo} 
-    Cuisine type: ${cuisineType}
-    Servings: ${servings}
-    Cooking time: ${timeGuide[cookingTime] || 'any'}
-    Please provide a complete recipe in the following JSON format (return ONLY valid JSON, no markdown):
+    const prompt = `
+Generate a detailed recipe using:
+
+Ingredients: ${ingredients.join(', ')}
+${dietaryInfo}
+Cuisine: ${cuisineType}
+Servings: ${servings}
+Cooking time: ${timeGuide[cookingTime] || 'any'}
+
+Return ONLY valid JSON:
+
+{
+  "name": "Recipe Name",
+  "description": "Brief description",
+  "cuisineType": "${cuisineType}",
+  "difficulty": "easy|medium|hard",
+  "prepTime": number,
+  "cookTime": number,
+  "servings": ${servings},
+  "ingredients": [
     {
-        "name": "Recipe Name",
-        "description": "A brief description of the recipe.",
-        "cuisineType": "${cuisineType}",
-        "difficulty": "easy|medium|hard",
-        "prepTime": number (in minutes),
-        "cookTime": number (in minutes),
-        "servings": ${servings},
-        "ingredients": [
-            {
-                "name": "Ingredient Name",
-                "quantity": number,
-                "unit": "unit of measurement",
-                "pricePerUnit": number (estimated cost per single unit)
-            }
-        ],
-        "instructions": [
-            "Step 1 description",
-            "Step 2 description"
-        ],
-        "dietaryTags": ["vegetarian", "gluten-free", etc.],
-        "nutrition": {
-            "calories": number,
-            "protein": number (in grams),
-            "carbs": number (in grams),
-            "fats": number (in grams),
-            "fiber": number (in grams)
-        },
-        "cookingTips": [
-            "Tip 1",
-            "Tip 2"
-        ]
+      "name": "Ingredient",
+      "quantity": number,
+      "unit": "string",
+      "pricePerUnit": number
     }
-        Make sure the recipe is creative, delicious, and uses the provided ingredients effectively.`;
-        try{
-            const response = await ai.models.generateContent({
-                model:  "gemini-2.5-flash",
+  ],
+  "instructions": [
+    "Step 1",
+    "Step 2"
+  ],
+  "dietaryTags": [],
+  "nutrition": {
+    "calories": number,
+    "protein": number,
+    "carbs": number,
+    "fats": number,
+    "fiber": number
+  },
+  "cookingTips": [
+    "Tip 1",
+    "Tip 2"
+  ]
+}
+`;
+
+    try {
+        const response = await callGeminiWithRetry(() =>
+            ai.models.generateContent({
+                model: "gemini-2.5-flash",
                 contents: prompt,
-            });
+            })
+        );
 
-            const generatedText = response.text.trim();
+        let text = extractText(response);
 
-            let jsonText = generatedText;
-            if(jsonText.startsWith('```json')){
-                jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?$/g, '');
-            }else if(jsonText.startsWith('```')){
-                jsonText = jsonText.replace(/```\n?/g, '');
-            }
-
-            const recipe = JSON.parse(jsonText);
-            return recipe;
-        }catch(error){
-            console.error('Gemini API error:', error);
-            throw new Error('Failed to generate recipe. Please try again');
+        if (!text) {
+            throw new Error("Empty response from Gemini");
         }
 
-};
+        // remove markdown
+        text = text
+            .replace(/```json/g, '')
+            .replace(/```/g, '')
+            .trim();
 
-export const generatePantrySuggestions = async (pantryItems, expiringItems = [])=>{
-    const ingredients = pantryItems.map(item => item.name).join(', ');
-    const expiringText =expiringItems.length > 0
-    ?  `\nPriority ingredients (expiring soon): ${expiringItems.join(', ')}`
-    : '';
-
-    const prompt = `Based on these available ingredients: ${ingredients}${expiringText}   
-    Suggest 3 creative recipe ideas that use these ingredients. Return ONLY a JSON array of strings (no markdown):
-
-    ["Recipe idea 1", "Recipe idea 2", "Recipe idea 3"]
-
-    Each suggestion should be a brief, appetizing description (1-2 sentences).`;
-
-    try{
-        const response =  await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-    });
-    let generatedText = response.text.trim();
-    if(generatedText.startsWith('```json')){
-        generatedText = generatedText.replace(/```json\n?/g, '').replace(/```\n?$/g, '');
-    } else if(generatedText.startsWith('```')){
-        generatedText = generatedText.replace(/```\n?/g, '');
-    }
-
-    const suggestions = JSON.parse(generatedText);
-    return suggestions;
-}catch(error){
-    console.error('Gemini API error', error);
-    throw new Error('Failed to generate suggestions');
-    }
-};
-
-export const generateCookingTips = async(recipe) =>{
-    const prompt =  `For this recipe: "${recipe.name}"
-    Ingredients: ${recipe.ingredients?.map(i => i.name).join(', ') || 'N/A'}
-    Provide 3-5 helpful cooking tips to make this recipe better. Return ONLY a JSON array of strings (no markdown): 
-    ["Tip 1", "Tip 2", Tip 3"]`;
-
-    try{
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-        });
-
-        let generatedText = response.text.trim();
-        if(generatedText.startsWith('```json')){
-            generatedText = generatedText.replace(/```json\n?/g, '').replace(/```\n?$/g, '');
-        } else if(generatedText.startsWith('```')){
-            generatedText = generatedText.replace(/```\n?/g, '');
+        let recipe;
+        try {
+            recipe = JSON.parse(text);
+        } catch (err) {
+            console.error("Invalid JSON from Gemini:", text);
+            throw new Error("AI returned invalid JSON format");
         }
-        const tips = JSON.parse(generatedText);
-        return tips;
-    }   catch(error){
+
+        return recipe;
+
+    } catch (error) {
         console.error('Gemini API error:', error);
-        return ['Cook with love and patience!'];
+        throw new Error('Failed to generate recipe. Please try again later.');
+    }
+};
+
+// ------------------- PANTRY SUGGESTIONS -------------------
+export const generatePantrySuggestions = async (pantryItems, expiringItems = []) => {
+
+    const ingredients = pantryItems.map(item => item.name).join(', ');
+
+    const expiringText = expiringItems.length > 0
+        ? `Priority ingredients: ${expiringItems.join(', ')}`
+        : '';
+
+    const prompt = `
+Suggest 3 recipes using:
+${ingredients}
+${expiringText}
+
+Return ONLY JSON array:
+["idea1", "idea2", "idea3"]
+`;
+
+    try {
+        const response = await callGeminiWithRetry(() =>
+            ai.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: prompt,
+            })
+        );
+
+        let text = extractText(response)
+            .replace(/```json/g, '')
+            .replace(/```/g, '')
+            .trim();
+
+        return JSON.parse(text);
+
+    } catch (error) {
+        console.error('Gemini API error:', error);
+        return ["Try a simple stir fry", "Make a mixed salad", "Cook a quick soup"];
+    }
+};
+
+// ------------------- COOKING TIPS -------------------
+export const generateCookingTips = async (recipe) => {
+
+    const prompt = `
+Recipe: ${recipe.name}
+Ingredients: ${recipe.ingredients?.map(i => i.name).join(', ') || 'N/A'}
+
+Return JSON array:
+["Tip 1", "Tip 2", "Tip 3"]
+`;
+
+    try {
+        const response = await callGeminiWithRetry(() =>
+            ai.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: prompt,
+            })
+        );
+
+        let text = extractText(response)
+            .replace(/```json/g, '')
+            .replace(/```/g, '')
+            .trim();
+
+        return JSON.parse(text);
+
+    } catch (error) {
+        console.error('Gemini API error:', error);
+        return ['Cook slowly for better flavor', 'Taste while cooking', 'Use fresh ingredients'];
     }
 };
 
 export default {
-    generateRecipe, generatePantrySuggestions, generateCookingTips
-}
+    generateRecipe,
+    generatePantrySuggestions,
+    generateCookingTips
+};
