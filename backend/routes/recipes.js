@@ -17,5 +17,7 @@ router.get('/:id', recipeController.getRecipeById);
 router.post('/', recipeController.saveRecipe);
 router.put('/:id', recipeController.updateRecipe);
 router.delete('/:id', recipeController.deleteRecipe);
+console.log("generateRecipe:", recipeController.generateRecipe);
+console.log("saveRecipe:", recipeController.saveRecipe);
 
 export default router;
