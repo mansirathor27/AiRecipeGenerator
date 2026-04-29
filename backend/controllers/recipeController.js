@@ -99,3 +99,33 @@ export const getPantrySuggestions = async (req, res, next) => {
         next(error);
     }
 };
+
+export const getRecipes = async (req, res, next) => {
+    try {
+        const recipes = await Recipe.findByUserId(req.user.id);
+        res.json({ success: true, data: { recipes } });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const deleteRecipe = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const recipe = await Recipe.delete(id, req.user.id);
+
+        if (!recipe) {
+            return res.status(404).json({
+                success: false,
+                message: "Recipe not found"
+            });
+        }
+
+        res.json({
+            success: true,
+            message: "Deleted successfully"
+        });
+    } catch (error) {
+        next(error);
+    }
+};
